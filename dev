@@ -6,45 +6,78 @@ IMAGE="arch-dev"
 
 # ─── Flags ────────────────────────────────────────────────────────────────────
 
-if [[ "$1" == "--help" ]]; then
-    echo "Usage: dev [--rebuild] [path]"
-    echo "  --rebuild   force image rebuild"
-    echo "  path        project dir to mount (default: \$PWD)"
-    exit 0
-fi
+REBUILD=false
+FLUSH=false
+UPGRADE=false
 
-if [[ "$1" == "--rebuild" ]]; then
-    podman rmi -f "$IMAGE" 2>/dev/null || true
-    shift
-fi
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --help)
+            echo "Usage: dev [--rebuild] [--flush] [--upgrade] [path]"
+            echo "  --rebuild   force image rebuild"
+            echo "  --flush     remove persistent volumes (claude auth and binaries)"
+            echo "  --upgrade   reinstall claude code, preserve auth"
+            echo "  path        project dir to mount (default: \$PWD)"
+            exit 0
+            ;;
+        --rebuild) REBUILD=true; shift ;;
+        --flush)   FLUSH=true; shift ;;
+        --upgrade) UPGRADE=true; shift ;;
+        *)         break ;;
+    esac
+done
 
 WORKSPACE="${1:-$PWD}"
 WORKSPACE="$(realpath "$WORKSPACE")"
+
+echo "  workspace : $WORKSPACE"
+[[ "$REBUILD" == true ]] && echo "  rebuild   : yes"
+[[ "$FLUSH"   == true ]] && echo "  flush     : yes"
+[[ "$UPGRADE" == true ]] && echo "  upgrade   : yes"
+
+if [[ "$FLUSH" == true ]]; then
+    echo "→ Flushing volumes..."
+    podman volume rm -f claude-auth claude-local 2>/dev/null || true
+fi
+
+if [[ "$UPGRADE" == true ]]; then
+    echo "→ Upgrading Claude Code..."
+    rm -f "$(podman volume inspect claude-auth --format '{{.Mountpoint}}')/.installed"
+    podman volume rm -f claude-local 2>/dev/null || true
+fi
+
+if [[ "$REBUILD" == true ]]; then
+    echo "→ Removing old image..."
+    podman rmi -f "$IMAGE" 2>/dev/null || true
+fi
 
 # ─── Image definition ─────────────────────────────────────────────────────────
 
 build_image() {
     echo "→ Building image..."
-    podman build -t "$IMAGE" - << DOCKERFILE
+    podman build -t "$IMAGE" - << 'DOCKERFILE'
 FROM archlinux:latest
 
-RUN pacman -Syu --noconfirm && \\
-    pacman -S --noconfirm \\
-        base-devel git curl wget unzip \\
-        nodejs npm python python-pip go \\
-        zsh && \\
+RUN pacman -Syu --noconfirm && \
+    pacman -S --noconfirm \
+        base-devel git curl wget unzip \
+        nodejs npm python python-pip go \
+        zsh && \
     pacman -Scc --noconfirm
 
-RUN sh -c "\$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
+ADD https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh /tmp/omz-install.sh
+RUN chmod +x /tmp/omz-install.sh && \
+    env -i HOME=/root PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    /tmp/omz-install.sh --unattended
 
 ENV GOPATH=/root/go
-ENV PATH=\$PATH:/root/go/bin
+ENV PATH=$PATH:/root/go/bin
 ENV SHELL=/bin/zsh
 
 WORKDIR /code
 
-RUN echo 'export PROMPT="%F{cyan}⬡ devbox%f %F{yellow}%~%f %(?.%F{green}.%F{red})❯%f "' >> /root/.zshrc
-
+RUN echo 'export PROMPT="%F{cyan}⬡ devbox%f %F{yellow}%~%f %(?.%F{green}.%F{red})❯%f "' >> /root/.zshrc && \
+    echo 'export PATH="$HOME/.local/bin:$PATH"' >> /root/.zshrc
 DOCKERFILE
 }
 
@@ -89,7 +122,8 @@ fi
 if podman container inspect "$CONTAINER" &>/dev/null 2>&1; then
     if [ "$(podman inspect -f '{{.State.Running}}' "$CONTAINER")" = "true" ]; then
         echo "→ Attaching, workspace: $WORKSPACE"
-        podman exec -it -w /code "$CONTAINER" /bin/zsh -l
+        podman exec -it -w /code \
+            "$CONTAINER" /bin/zsh
         exit 0
     else
         podman rm "$CONTAINER" >/dev/null
@@ -113,4 +147,4 @@ podman run -it \
     -w /code \
     --entrypoint /entrypoint.sh \
     "$IMAGE" \
-    /bin/zsh -l
+    /bin/zsh

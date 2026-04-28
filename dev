@@ -88,19 +88,17 @@ ENTRYPOINT_SCRIPT=$(cat << 'EOF'
 set -e
 STAMP="/root/.claude/.installed"
 
-# Restore config if persisted
-if [ -f "/root/.claude/.claude.json.persisted" ]; then
-    cp /root/.claude/.claude.json.persisted /root/.claude.json
-fi
-
 if [ ! -f "$STAMP" ]; then
     echo ">>> Installing Claude Code..."
     curl -fsSL https://claude.ai/install.sh | sh
     touch "$STAMP"
 fi
 
-# Persist config back into volume
-cp /root/.claude.json /root/.claude/.claude.json.persisted 2>/dev/null || true
+# Keep .claude.json inside the persisted volume
+if [ ! -f "/root/.claude/.claude.json" ]; then
+    cp /root/.claude.json /root/.claude/.claude.json 2>/dev/null || true
+fi
+ln -sf /root/.claude/.claude.json /root/.claude.json
 
 exec "$@"
 EOF

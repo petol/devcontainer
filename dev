@@ -3,6 +3,21 @@ set -e
 
 CONTAINER="arch-dev-persistent"
 IMAGE="arch-dev"
+
+# ─── Flags ────────────────────────────────────────────────────────────────────
+
+if [[ "$1" == "--help" ]]; then
+    echo "Usage: dev [--rebuild] [path]"
+    echo "  --rebuild   force image rebuild"
+    echo "  path        project dir to mount (default: \$PWD)"
+    exit 0
+fi
+
+if [[ "$1" == "--rebuild" ]]; then
+    podman rmi -f "$IMAGE" 2>/dev/null || true
+    shift
+fi
+
 WORKSPACE="${1:-$PWD}"
 WORKSPACE="$(realpath "$WORKSPACE")"
 
@@ -28,46 +43,40 @@ ENV SHELL=/bin/zsh
 
 WORKDIR /code
 
-RUN cat >> /root/.zshrc << 'EOF'
-export PATH="\$HOME/.local/bin:\$PATH"
-export PROMPT='%F{cyan}⬡ devbox%f %F{yellow}%~%f %(?.%F{green}.%F{red})❯%f '
-EOF
+RUN echo 'export PROMPT="%F{cyan}⬡ devbox%f %F{yellow}%~%f %(?.%F{green}.%F{red})❯%f "' >> /root/.zshrc
 
 DOCKERFILE
 }
 
 # ─── Entrypoint (injected into container on start) ────────────────────────────
 
-ENTRYPOINT_SCRIPT='#!/usr/bin/env bash
+ENTRYPOINT_SCRIPT=$(cat << 'EOF'
+#!/usr/bin/env bash
 set -e
-STAMP="/root/.claude_code_installed"
+STAMP="/root/.claude/.installed"
+
+# Restore config if persisted
+if [ -f "/root/.claude/.claude.json.persisted" ]; then
+    cp /root/.claude/.claude.json.persisted /root/.claude.json
+fi
+
 if [ ! -f "$STAMP" ]; then
     echo ">>> Installing Claude Code..."
     curl -fsSL https://claude.ai/install.sh | sh
     touch "$STAMP"
 fi
-exec "$@"'
+
+# Persist config back into volume
+cp /root/.claude.json /root/.claude/.claude.json.persisted 2>/dev/null || true
+
+exec "$@"
+EOF
+)
 
 # ─── Volumes ──────────────────────────────────────────────────────────────────
 
 podman volume create claude-auth 2>/dev/null || true
 podman volume create claude-local 2>/dev/null || true
-
-# ─── Flags ────────────────────────────────────────────────────────────────────
-
-if [[ "$1" == "--rebuild" ]]; then
-    podman rmi -f "$IMAGE" 2>/dev/null || true
-    shift
-    WORKSPACE="${1:-$PWD}"
-    WORKSPACE="$(realpath "$WORKSPACE")"
-fi
-
-if [[ "$1" == "--help" ]]; then
-    echo "Usage: dev [--rebuild] [path]"
-    echo "  --rebuild   force image rebuild"
-    echo "  path        project dir to mount (default: \$PWD)"
-    exit 0
-fi
 
 # ─── Build if missing ─────────────────────────────────────────────────────────
 
@@ -88,12 +97,20 @@ if podman container inspect "$CONTAINER" &>/dev/null 2>&1; then
 fi
 
 echo "→ Starting container, workspace: $WORKSPACE"
-echo "$ENTRYPOINT_SCRIPT" | podman run -i \
+
+# Write entrypoint to a temp file
+TMPEP=$(mktemp /tmp/dev-entrypoint-XXXXXX.sh)
+trap 'rm -f "$TMPEP"' EXIT
+echo "$ENTRYPOINT_SCRIPT" > "$TMPEP"
+chmod +x "$TMPEP"
+
+podman run -it \
     --name "$CONTAINER" \
     -v "${WORKSPACE}:/code:z" \
     -v "claude-auth:/root/.claude:z" \
     -v "claude-local:/root/.local:z" \
+    -v "$TMPEP:/entrypoint.sh:z" \
     -w /code \
-    --entrypoint /bin/bash \
+    --entrypoint /entrypoint.sh \
     "$IMAGE" \
-    -c 'cat > /tmp/ep.sh && chmod +x /tmp/ep.sh && /tmp/ep.sh /bin/zsh -l'
+    /bin/zsh -l

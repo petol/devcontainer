@@ -132,7 +132,7 @@ echo "→ Starting container, workspace: $WORKSPACE"
 
 # Write entrypoint to a temp file
 TMPEP=$(mktemp /tmp/dev-entrypoint-XXXXXX.sh)
-trap 'rm -f "$TMPEP"' EXIT
+trap 'rm -f "$TMPEP"' EXIT INT TERM
 echo "$ENTRYPOINT_SCRIPT" > "$TMPEP"
 chmod +x "$TMPEP"
 

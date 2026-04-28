@@ -13,9 +13,9 @@ A single-file Podman-based dev container for AI-assisted coding on NixOS. No per
 ## Install
 
 ```bash
-git clone <repo-url> ~/kod/devcontainer
-ln -s ~/kod/devcontainer/dev ~/.local/bin/dev
-chmod +x ~/kod/devcontainer/dev
+git clone <repo-url> ~/code/devcontainer
+ln -s ~/code/devcontainer/dev ~/.local/bin/dev
+chmod +x ~/code/devcontainer/dev
 ```
 
 Make sure `~/.local/bin` is in your PATH. If not, add to your `~/.zshrc`:

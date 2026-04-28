@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+set -e
+
+CONTAINER="arch-dev-persistent"
+IMAGE="arch-dev"
+WORKSPACE="${1:-$PWD}"
+WORKSPACE="$(realpath "$WORKSPACE")"
+
+# ─── Image definition ─────────────────────────────────────────────────────────
+
+build_image() {
+    echo "→ Building image..."
+    podman build -t "$IMAGE" - << DOCKERFILE
+FROM archlinux:latest
+
+RUN pacman -Syu --noconfirm && \\
+    pacman -S --noconfirm \\
+        base-devel git curl wget unzip \\
+        nodejs npm python python-pip go \\
+        zsh && \\
+    pacman -Scc --noconfirm
+
+RUN sh -c "\$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
+
+ENV GOPATH=/root/go
+ENV PATH=\$PATH:/root/go/bin
+ENV SHELL=/bin/zsh
+
+WORKDIR /code
+
+RUN cat >> /root/.zshrc << 'EOF'
+export PATH="\$HOME/.local/bin:\$PATH"
+export PROMPT='%F{cyan}⬡ devbox%f %F{yellow}%~%f %(?.%F{green}.%F{red})❯%f '
+EOF
+
+DOCKERFILE
+}
+
+# ─── Entrypoint (injected into container on start) ────────────────────────────
+
+ENTRYPOINT_SCRIPT='#!/usr/bin/env bash
+set -e
+STAMP="/root/.claude_code_installed"
+if [ ! -f "$STAMP" ]; then
+    echo ">>> Installing Claude Code..."
+    curl -fsSL https://claude.ai/install.sh | sh
+    touch "$STAMP"
+fi
+exec "$@"'
+
+# ─── Volumes ──────────────────────────────────────────────────────────────────
+
+podman volume create claude-auth 2>/dev/null || true
+podman volume create claude-local 2>/dev/null || true
+
+# ─── Flags ────────────────────────────────────────────────────────────────────
+
+if [[ "$1" == "--rebuild" ]]; then
+    podman rmi -f "$IMAGE" 2>/dev/null || true
+    shift
+    WORKSPACE="${1:-$PWD}"
+    WORKSPACE="$(realpath "$WORKSPACE")"
+fi
+
+if [[ "$1" == "--help" ]]; then
+    echo "Usage: dev [--rebuild] [path]"
+    echo "  --rebuild   force image rebuild"
+    echo "  path        project dir to mount (default: \$PWD)"
+    exit 0
+fi
+
+# ─── Build if missing ─────────────────────────────────────────────────────────
+
+if ! podman image exists "$IMAGE"; then
+    build_image
+fi
+
+# ─── Attach or start ──────────────────────────────────────────────────────────
+
+if podman container inspect "$CONTAINER" &>/dev/null 2>&1; then
+    if [ "$(podman inspect -f '{{.State.Running}}' "$CONTAINER")" = "true" ]; then
+        echo "→ Attaching, workspace: $WORKSPACE"
+        podman exec -it -w /code "$CONTAINER" /bin/zsh -l
+        exit 0
+    else
+        podman rm "$CONTAINER" >/dev/null
+    fi
+fi
+
+echo "→ Starting container, workspace: $WORKSPACE"
+echo "$ENTRYPOINT_SCRIPT" | podman run -i \
+    --name "$CONTAINER" \
+    -v "${WORKSPACE}:/code:z" \
+    -v "claude-auth:/root/.claude:z" \
+    -v "claude-local:/root/.local:z" \
+    -w /code \
+    --entrypoint /bin/bash \
+    "$IMAGE" \
+    -c 'cat > /tmp/ep.sh && chmod +x /tmp/ep.sh && /tmp/ep.sh /bin/zsh -l'

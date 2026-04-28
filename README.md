@@ -28,7 +28,7 @@ export PATH="$HOME/.local/bin:$PATH"
 
 ```bash
 dev                  # mount current directory
-dev ~/kod/myproject  # mount a specific project
+dev ~/code/myproject  # mount a specific project
 dev --rebuild        # force image rebuild (e.g. after editing dev script)
 dev --flush          # remove persistent volumes (wipes claude auth and binaries)
 dev --upgrade        # reinstall claude code, preserve auth

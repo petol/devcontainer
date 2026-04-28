@@ -38,7 +38,7 @@ dev --help           # show usage
 Flags can be combined in any order:
 
 ```bash
-dev --flush --rebuild ~/kod/myproject
+dev --flush --rebuild ~/code/myproject
 ```
 
 ## How it works

@@ -8,7 +8,7 @@ A single-file Podman-based dev container for AI-assisted coding on NixOS. No per
 - Installs Claude Code on first run, auth persists across rebuilds via named volumes
 - Mounts only the current project directory — nothing else is visible inside the container
 - Re-attaches to a running container if one is already active
-- Installers are fetched from official sources, if you sensitive to curl | sh then review first
+- Installers are fetched from official sources, if you're sensitive to curl | sh then review first
 
 ## Install
 

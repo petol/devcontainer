@@ -56,7 +56,7 @@ fi
 build_image() {
     echo "→ Building image..."
     podman build -t "$IMAGE" - << 'DOCKERFILE'
-FROM archlinux:latest
+FROM archlinux:base-20260607.0.541780
 
 RUN pacman -Syu --noconfirm && \
     pacman -S --noconfirm \
@@ -90,7 +90,26 @@ STAMP="/root/.claude/.installed"
 
 if [ ! -f "$STAMP" ]; then
     echo ">>> Installing Claude Code..."
-    curl -fsSL https://claude.ai/install.sh | sh
+    INSTALLER=$(mktemp /tmp/claude-install-XXXXXX.sh)
+    chmod 0600 "$INSTALLER"
+    # Download installer to file — never pipe directly into sh
+    curl -fsSL https://claude.ai/install.sh -o "$INSTALLER"
+    # Basic sanity checks: must be a shell script and non-trivially sized
+    if ! head -1 "$INSTALLER" | grep -q '^#!'; then
+        echo ">>> Error: installer does not look like a shell script" >&2
+        rm -f "$INSTALLER"
+        exit 1
+    fi
+    if [ ! -s "$INSTALLER" ] || [ "$(wc -c < "$INSTALLER")" -lt 1000 ]; then
+        echo ">>> Error: installer is unexpectedly small" >&2
+        rm -f "$INSTALLER"
+        exit 1
+    fi
+    # Log the hash so the caller can audit what ran
+    echo ">>> installer SHA256: $(sha256sum "$INSTALLER" | cut -d' ' -f1)"
+    chmod 0700 "$INSTALLER"
+    "$INSTALLER"
+    rm -f "$INSTALLER"
     touch "$STAMP"
 fi
 
@@ -132,9 +151,10 @@ echo "→ Starting container, workspace: $WORKSPACE"
 
 # Write entrypoint to a temp file
 TMPEP=$(mktemp /tmp/dev-entrypoint-XXXXXX.sh)
-trap 'rm -f "$TMPEP"' EXIT INT TERM
+chmod 0600 "$TMPEP"
+trap 'rm -f "$TMPEP"' EXIT INT TERM HUP
 echo "$ENTRYPOINT_SCRIPT" > "$TMPEP"
-chmod +x "$TMPEP"
+chmod 0700 "$TMPEP"
 
 podman run -it \
     --name "$CONTAINER" \

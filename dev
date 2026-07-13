@@ -15,8 +15,9 @@ while [[ $# -gt 0 ]]; do
         --help)
             echo "Usage: dev [--rebuild] [--flush] [--upgrade] [path]"
             echo "  --rebuild   force image rebuild"
-            echo "  --flush     remove persistent volumes (claude auth and binaries)"
-            echo "  --upgrade   reinstall claude code, preserve auth"
+            echo "  --flush     remove persistent volumes (agent auth and binaries;"
+            echo "              does NOT remove dev-audit, the shell audit log)"
+            echo "  --upgrade   reinstall claude code and codex, preserve auth"
             echo "  path        project dir to mount (default: \$PWD)"
             exit 0
             ;;
@@ -37,12 +38,13 @@ echo "  workspace : $WORKSPACE"
 
 if [[ "$FLUSH" == true ]]; then
     echo "→ Flushing volumes..."
-    podman volume rm -f claude-auth claude-local 2>/dev/null || true
+    podman volume rm -f claude-auth claude-local codex-auth 2>/dev/null || true
 fi
 
 if [[ "$UPGRADE" == true ]]; then
-    echo "→ Upgrading Claude Code..."
+    echo "→ Upgrading Claude Code and Codex..."
     rm -f "$(podman volume inspect claude-auth --format '{{.Mountpoint}}')/.installed"
+    rm -f "$(podman volume inspect codex-auth --format '{{.Mountpoint}}')/.installed" 2>/dev/null || true
     podman volume rm -f claude-local 2>/dev/null || true
 fi
 
@@ -62,7 +64,7 @@ RUN pacman -Syu --noconfirm && \
     pacman -S --noconfirm \
         base-devel git curl wget unzip \
         nodejs npm python python-pip go \
-        zsh && \
+        zsh chromium && \
     pacman -Scc --noconfirm
 
 ADD https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh /tmp/omz-install.sh
@@ -73,11 +75,20 @@ RUN chmod +x /tmp/omz-install.sh && \
 ENV GOPATH=/root/go
 ENV PATH=$PATH:/root/go/bin
 ENV SHELL=/bin/zsh
+ENV NODE_PATH=/usr/lib/node_modules
 
 WORKDIR /code
 
+# Playwright: pacman's chromium supplies the runtime shared libs (nss, gtk3,
+# alsa-lib, mesa, ...); Playwright still downloads its own version-matched
+# browser build so its driver protocol always matches the browser it drives.
+RUN npm install -g playwright && \
+    npx playwright install chromium
+
 RUN echo 'export PROMPT="%F{cyan}⬡ devbox%f %F{yellow}%~%f %(?.%F{green}.%F{red})❯%f "' >> /root/.zshrc && \
-    echo 'export PATH="$HOME/.local/bin:$PATH"' >> /root/.zshrc
+    echo 'export PATH="$HOME/.local/bin:$PATH"' >> /root/.zshrc && \
+    echo 'DEV_AUDIT_LOG=/root/.audit/shell-history.log' >> /root/.zshrc && \
+    echo 'preexec() { print -r -- "$(date -Iseconds) [$$] ${PWD} :: ${1}" >> "$DEV_AUDIT_LOG" 2>/dev/null }' >> /root/.zshrc
 DOCKERFILE
 }
 
@@ -86,6 +97,7 @@ DOCKERFILE
 ENTRYPOINT_SCRIPT=$(cat << 'EOF'
 #!/usr/bin/env bash
 set -e
+export PATH="/root/.local/bin:$PATH"
 STAMP="/root/.claude/.installed"
 
 if [ ! -f "$STAMP" ]; then
@@ -119,6 +131,57 @@ if [ ! -f "/root/.claude/.claude.json" ]; then
 fi
 ln -sf /root/.claude/.claude.json /root/.claude.json
 
+# Codex CLI — binary lives in the persisted /root/.local volume, auth in /root/.codex
+if [ ! -x "/root/.local/bin/codex" ]; then
+    echo ">>> Installing Codex CLI..."
+    npm install -g --prefix /root/.local @openai/codex
+fi
+
+# Seed environment notes for both agents (created once; edit in place afterwards,
+# these are not overwritten on later starts — delete or --flush to reseed)
+ENV_NOTES=$(cat << 'NOTES_EOF'
+# Environment
+
+You are running inside a persistent Podman dev container (Arch Linux), started
+via the `dev` script — not directly on the host.
+
+- Host OS: NixOS (host packages are managed via Nix, not pacman/apt — this
+  container's package manager has no bearing on the host)
+- Container OS: Arch Linux (pacman available inside the container)
+- Shell: zsh
+- Workspace: the host project dir is bind-mounted at `/code` — the only path
+  shared with the host
+- Persistent volumes (survive container restarts/recreation, wiped only by
+  `dev --flush`):
+  - `/root/.claude` — Claude Code auth + config
+  - `/root/.codex` — Codex CLI auth + config
+  - `/root/.local` — installed CLI binaries (claude, codex) and global
+    npm/pip/go installs
+- Anything outside `/code` and the volumes above is ephemeral and resets on
+  container recreation.
+- This container is deliberately permissive (built for agentic/"yolo mode"
+  use) since it's isolated from the host — but it is hardened in specific,
+  deliberate ways, listed below. If something fails because of one of these,
+  that is by design, not a bug to work around:
+  - Network: outbound to the home LAN (`192.168.0.0/16`) is blocked except
+    the DNS server (`192.168.10.53`). General internet access is open — this
+    is not an allowlist, just a LAN block. Enforced by an nftables rule in
+    this container's own network namespace.
+  - Capabilities: pinned to a minimal explicit set (no `NET_ADMIN`,
+    `NET_RAW`, etc.). Commands like `ping`, `nft`, `ip route add/del`, or
+    anything needing raw sockets will fail with "Operation not permitted" —
+    that's the capability pin working, not a broken container.
+  - Resources: memory capped at 24GB, process count capped at 4096 pids.
+  - Audit: interactive shell commands (typed at this zsh prompt) are logged
+    to `/root/.audit/shell-history.log`. This does not cover Claude/Codex's
+    own tool-invoked commands, which each already logs separately in its own
+    persisted state.
+NOTES_EOF
+)
+
+[ -f /root/.claude/CLAUDE.md ] || echo "$ENV_NOTES" > /root/.claude/CLAUDE.md
+[ -f /root/.codex/AGENTS.md ]  || echo "$ENV_NOTES" > /root/.codex/AGENTS.md
+
 exec "$@"
 EOF
 )
@@ -127,6 +190,8 @@ EOF
 
 podman volume create claude-auth 2>/dev/null || true
 podman volume create claude-local 2>/dev/null || true
+podman volume create codex-auth 2>/dev/null || true
+podman volume create dev-audit 2>/dev/null || true
 
 # ─── Build if missing ─────────────────────────────────────────────────────────
 
@@ -156,13 +221,43 @@ trap 'rm -f "$TMPEP"' EXIT INT TERM HUP
 echo "$ENTRYPOINT_SCRIPT" > "$TMPEP"
 chmod 0700 "$TMPEP"
 
-podman run -it \
+podman run -d \
     --name "$CONTAINER" \
+    --cap-drop=ALL \
+    --cap-add=CHOWN --cap-add=DAC_OVERRIDE --cap-add=FOWNER --cap-add=FSETID \
+    --cap-add=KILL --cap-add=SETGID --cap-add=SETUID --cap-add=SETPCAP \
+    --cap-add=NET_BIND_SERVICE --cap-add=SYS_CHROOT --cap-add=SETFCAP \
+    --security-opt no-new-privileges \
+    --memory=24g --memory-swap=24g --pids-limit=4096 \
     -v "${WORKSPACE}:/code:z" \
     -v "claude-auth:/root/.claude:z" \
     -v "claude-local:/root/.local:z" \
+    -v "codex-auth:/root/.codex:z" \
+    -v "dev-audit:/root/.audit:z" \
     -v "$TMPEP:/entrypoint.sh:z" \
     -w /code \
     --entrypoint /entrypoint.sh \
     "$IMAGE" \
-    /bin/zsh
+    sleep infinity
+
+# ─── Network policy ────────────────────────────────────────────────────────────
+# Block the home LAN, except the DNS server; general internet stays open (no
+# allowlist). Applied by a short-lived helper that joins the container's
+# network namespace with a transient NET_ADMIN — the main container above never
+# gets that capability, so nothing running inside it can remove this rule.
+
+echo "→ Applying network policy (blocking LAN, allowing DNS + internet)..."
+podman run --rm \
+    --network "container:$CONTAINER" \
+    --cap-add=NET_ADMIN \
+    "$IMAGE" \
+    sh -c '
+        nft add table inet devfw
+        nft add chain inet devfw output "{ type filter hook output priority filter ; policy accept ; }"
+        nft add rule inet devfw output ip daddr 192.168.10.53 accept
+        nft add rule inet devfw output ip daddr 192.168.0.0/16 drop
+    '
+
+echo "→ Attaching, workspace: $WORKSPACE"
+podman exec -it -w /code \
+    "$CONTAINER" /bin/zsh

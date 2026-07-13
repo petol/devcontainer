@@ -43,8 +43,17 @@ fi
 
 if [[ "$UPGRADE" == true ]]; then
     echo "→ Upgrading Claude Code and Codex..."
-    rm -f "$(podman volume inspect claude-auth --format '{{.Mountpoint}}')/.installed"
-    rm -f "$(podman volume inspect codex-auth --format '{{.Mountpoint}}')/.installed" 2>/dev/null || true
+    # Clears the install stamp Claude's entrypoint check gates on, so it
+    # reinstalls on next start. This runs before the "Volumes" section below
+    # creates claude-auth, so on a first-ever --upgrade (or --flush --upgrade
+    # in one invocation) the volume may not exist yet — guard explicitly
+    # rather than let an empty Mountpoint silently turn this into `rm -f
+    # /.installed` on the host.
+    CLAUDE_AUTH_MOUNT="$(podman volume inspect claude-auth --format '{{.Mountpoint}}' 2>/dev/null)"
+    [ -n "$CLAUDE_AUTH_MOUNT" ] && rm -f "$CLAUDE_AUTH_MOUNT/.installed"
+    # Codex has no install stamp of its own — its entrypoint check is just
+    # "does /root/.local/bin/codex exist", so removing claude-local below
+    # (where that binary lives) is what actually forces its reinstall.
     podman volume rm -f claude-local 2>/dev/null || true
 fi
 

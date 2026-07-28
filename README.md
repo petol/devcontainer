@@ -29,12 +29,17 @@ export PATH="$HOME/.local/bin:$PATH"
 ## Usage
 
 ```bash
-dev                  # mount current directory
-dev ~/code/myproject  # mount a specific project
-dev --rebuild        # force image rebuild (e.g. after editing dev script)
-dev --flush          # remove persistent auth/binary volumes (not the audit log)
-dev --upgrade        # reinstall claude code and codex, preserve auth
-dev --help           # show usage
+dev                    # mount current directory
+dev ~/code/myproject   # mount a specific project
+dev --rebuild          # force image rebuild (e.g. after editing dev script)
+dev --flush            # remove persistent auth/binary volumes (not the audit log)
+dev --upgrade          # reinstall claude code and codex, preserve auth
+dev --restart          # stop/remove the running container so a new one is
+                       # created (e.g. to mount a different project) instead
+                       # of just attaching to the old one
+dev --update-notes     # rewrite the seeded CLAUDE.md/AGENTS.md from the
+                       # current template, without flushing auth
+dev --help             # show usage
 ```
 
 Flags can be combined in any order:

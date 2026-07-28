@@ -12,18 +12,22 @@ A single Bash script (`dev`) that defines a Podman-based dev container for agent
 - `dev --rebuild` — rebuild the image and pick up changes to `build_image()` or the entrypoint. Required after editing either.
 - `dev --flush --rebuild` — full reset: wipes `claude-auth`, `claude-local`, `codex-auth` (not `dev-audit`) and rebuilds. Use this when you need to verify an install-on-first-run code path actually executes — a stale volume with a manually-placed binary will otherwise make an install check silently pass without ever running (this exact bug happened once with the Codex binary).
 - `dev --upgrade` — reinstall Claude Code and Codex, preserving auth.
+- `dev --restart <path>` — stop/remove the running container first, so a fresh one is created mounting `<path>`, instead of just attaching to whatever is already running with its old mount.
+- `dev --update-notes` — force-rewrite the seeded `CLAUDE.md`/`AGENTS.md` from the current template without flushing auth. Writes straight to each volume's mountpoint, so it works even if no container is running.
 - No automated tests exist. The established way to validate a change to `dev` is to run the equivalent commands live inside the *currently running* container first (pacman installs, capability checks, nft rule syntax, etc.), confirm the behavior, and only then write it into the Dockerfile/entrypoint heredoc. Several past changes (Playwright/Chromium, the network firewall, the `--upgrade` volume-inspect fix) were verified this way before being committed.
 
 ## Architecture
 
 Everything is in `dev`, in four parts:
 
-1. **Flag parsing** (`--rebuild`/`--flush`/`--upgrade`/`--help`) at the top.
+1. **Flag parsing** (`--rebuild`/`--flush`/`--upgrade`/`--restart`/`--update-notes`/`--help`) at the top.
 2. **`build_image()`** — the Dockerfile as a heredoc. Installs the Arch toolchain, Oh My Zsh, Chromium (system libs only — see gotcha below), and Playwright globally.
 3. **`ENTRYPOINT_SCRIPT`** — a heredoc written to a temp file and bind-mounted into the container as `/entrypoint.sh`. Runs once per container creation: installs Claude Code (stamped via `/root/.claude/.installed` so it never reruns), installs Codex if its binary is missing, and seeds `CLAUDE.md`/`AGENTS.md` environment notes into the two auth volumes (only if not already present — see gotcha below).
 4. **Attach-or-start logic** at the bottom, which now follows a specific two-step container lifecycle (see below).
 
 ### Container lifecycle: detached + exec, plus a throwaway firewall helper
+
+`--restart` stops/removes the existing container (if any) right before the attach-or-start check, so that check always finds no container and falls through to creating a fresh one — this is how you swap the mounted workspace without manually killing the container first. Without `--restart`, a running container is always just reattached to, keeping its original mount.
 
 The main container starts detached (`podman run -d ... sleep infinity`), not in the foreground. A second, `--rm` throwaway container then runs `podman run --rm --network container:$CONTAINER --cap-add=NET_ADMIN "$IMAGE" sh -c 'nft ...'` — it joins the *main* container's existing network namespace instead of getting its own, installs the LAN-blocking firewall rule there, and exits immediately. Only then does the script attach interactively via `podman exec -it -w /code "$CONTAINER" /bin/zsh` — the same call already used by the "reattach to an already-running container" branch, so both paths converge.
 
@@ -40,9 +44,11 @@ This exists specifically so the main container never has to hold `NET_ADMIN` its
 
 Codex's reinstall check is `[ ! -x /root/.local/bin/codex ]` against `claude-local`, not a stamp file in `codex-auth` — there is no such stamp. A previous version of `--upgrade` tried to clear one anyway; it was dead code and has been removed. If you're touching the upgrade/flush logic, remember which volume actually gates which install.
 
-### Environment notes are seeded once, not synced
+### Environment notes: single source, seeded once, force-updatable
 
-The entrypoint writes `CLAUDE.md`/`AGENTS.md` into `claude-auth`/`codex-auth` only if the file doesn't already exist (`[ -f ... ] || echo ... > ...`), so user edits inside a running container are never clobbered. The tradeoff: editing the heredoc template in `dev` does **not** update files already seeded into an existing container's volumes — those have to be edited directly too, or the volume flushed. When updating the environment-notes content, keep the heredoc in `dev` and the two live files in sync manually.
+`ENV_NOTES` is defined exactly once in `dev` (outside `ENTRYPOINT_SCRIPT`). The entrypoint heredoc contains a literal `ENV_NOTES_PLACEHOLDER` token that gets swapped for the real text via `${ENTRYPOINT_SCRIPT//ENV_NOTES_PLACEHOLDER/$ENV_NOTES}` after the heredoc is captured — this is why the entrypoint heredoc stays single-quoted (`'EOF'`, no shell expansion) while still picking up the shared content; the alternative (an unquoted heredoc) would require escaping every `$INSTALLER`/`$STAMP`/`$(...)` the entrypoint uses internally.
+
+On first container start, the entrypoint writes `CLAUDE.md`/`AGENTS.md` into `claude-auth`/`codex-auth` only if the file doesn't already exist (`[ -f ... ] || echo ... > ...`), so user edits inside a running container are never clobbered by a later restart. To pick up template changes without touching auth, run `dev --update-notes` — it writes `$ENV_NOTES` straight to each volume's host-side mountpoint (found via `podman volume inspect --format '{{.Mountpoint}}'`, same trick `--upgrade` uses), so it works whether or not the container is currently running, and does not require `--flush`/reauth.
 
 ### Networking backend: pasta, not host networking
 

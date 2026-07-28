@@ -9,22 +9,32 @@ IMAGE="arch-dev"
 REBUILD=false
 FLUSH=false
 UPGRADE=false
+RESTART=false
+UPDATE_NOTES=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --help)
-            echo "Usage: dev [--rebuild] [--flush] [--upgrade] [path]"
-            echo "  --rebuild   force image rebuild"
-            echo "  --flush     remove persistent volumes (agent auth and binaries;"
-            echo "              does NOT remove dev-audit, the shell audit log)"
-            echo "  --upgrade   reinstall claude code and codex, preserve auth"
-            echo "  path        project dir to mount (default: \$PWD)"
+            echo "Usage: dev [--rebuild] [--flush] [--upgrade] [--restart] [--update-notes] [path]"
+            echo "  --rebuild       force image rebuild"
+            echo "  --flush         remove persistent volumes (agent auth and binaries;"
+            echo "                  does NOT remove dev-audit, the shell audit log)"
+            echo "  --upgrade       reinstall claude code and codex, preserve auth"
+            echo "  --restart       stop/remove the running container first, so it is"
+            echo "                  recreated with the given path mounted (e.g. to switch"
+            echo "                  projects) instead of just attaching to the old one"
+            echo "  --update-notes  overwrite the seeded CLAUDE.md/AGENTS.md in the auth"
+            echo "                  volumes with the current template, without flushing"
+            echo "                  auth (normally these are only written once)"
+            echo "  path            project dir to mount (default: \$PWD)"
             exit 0
             ;;
-        --rebuild) REBUILD=true; shift ;;
-        --flush)   FLUSH=true; shift ;;
-        --upgrade) UPGRADE=true; shift ;;
-        *)         break ;;
+        --rebuild)      REBUILD=true; shift ;;
+        --flush)        FLUSH=true; shift ;;
+        --upgrade)      UPGRADE=true; shift ;;
+        --restart)      RESTART=true; shift ;;
+        --update-notes) UPDATE_NOTES=true; shift ;;
+        *)              break ;;
     esac
 done
 
@@ -32,9 +42,11 @@ WORKSPACE="${1:-$PWD}"
 WORKSPACE="$(realpath "$WORKSPACE")"
 
 echo "  workspace : $WORKSPACE"
-[[ "$REBUILD" == true ]] && echo "  rebuild   : yes"
-[[ "$FLUSH"   == true ]] && echo "  flush     : yes"
-[[ "$UPGRADE" == true ]] && echo "  upgrade   : yes"
+[[ "$REBUILD"      == true ]] && echo "  rebuild      : yes"
+[[ "$FLUSH"        == true ]] && echo "  flush        : yes"
+[[ "$UPGRADE"      == true ]] && echo "  upgrade      : yes"
+[[ "$RESTART"      == true ]] && echo "  restart      : yes"
+[[ "$UPDATE_NOTES" == true ]] && echo "  update-notes : yes"
 
 if [[ "$FLUSH" == true ]]; then
     echo "→ Flushing volumes..."
@@ -61,6 +73,60 @@ if [[ "$REBUILD" == true ]]; then
     echo "→ Removing old image..."
     podman rmi -f "$IMAGE" 2>/dev/null || true
 fi
+
+# ─── Environment notes ────────────────────────────────────────────────────────
+# Single source of truth for both the entrypoint's first-run seeding and
+# --update-notes' forced overwrite, so the two paths can't drift out of sync.
+
+ENV_NOTES=$(cat << 'NOTES_EOF'
+# Environment
+
+You are running inside a persistent Podman dev container (Arch Linux), started
+via the `dev` script — not directly on the host.
+
+- Host OS: NixOS (host packages are managed via Nix, not pacman/apt — this
+  container's package manager has no bearing on the host)
+- Container OS: Arch Linux (pacman available inside the container)
+- Shell: zsh
+- GitHub identity:
+  - Username: `petol`
+  - Commit email: `petter@pols.se`
+- You may install packages with `pacman` as needed. The container is ephemeral,
+  so system packages installed this way disappear when it is recreated.
+- Workspace: the host project dir is bind-mounted at `/code` — the only path
+  shared with the host
+- `/code` may map to different host folders between runs. Do not assume a
+  particular path under `/code` always represents the same project; determine
+  project identity from the folder's contents. Keep project-specific memories,
+  notes, and configuration in that project's folder rather than associating
+  them globally with a `/code` path.
+- Persistent volumes (survive container restarts/recreation, wiped only by
+  `dev --flush`):
+  - `/root/.claude` — Claude Code auth + config
+  - `/root/.codex` — Codex CLI auth + config
+  - `/root/.local` — installed CLI binaries (claude, codex) and global
+    npm/pip/go installs
+- Anything outside `/code` and the volumes above is ephemeral and resets on
+  container recreation.
+- This container is deliberately permissive (built for agentic/"yolo mode"
+  use) since it's isolated from the host — but it is hardened in specific,
+  deliberate ways, listed below. If something fails because of one of these,
+  that is by design, not a bug to work around:
+  - Network: outbound to the home LAN (`192.168.0.0/16`) is blocked except
+    the DNS server (`192.168.10.53`). General internet access is open — this
+    is not an allowlist, just a LAN block. Enforced by an nftables rule in
+    this container's own network namespace.
+  - Capabilities: pinned to a minimal explicit set (no `NET_ADMIN`,
+    `NET_RAW`, etc.). Commands like `ping`, `nft`, `ip route add/del`, or
+    anything needing raw sockets will fail with "Operation not permitted" —
+    that's the capability pin working, not a broken container.
+  - Resources: memory capped at 24GB, process count capped at 4096 pids.
+  - Audit: interactive shell commands (typed at this zsh prompt) are logged
+    to `/root/.audit/shell-history.log`. This does not cover Claude/Codex's
+    own tool-invoked commands, which each already logs separately in its own
+    persisted state.
+NOTES_EOF
+)
 
 # ─── Image definition ─────────────────────────────────────────────────────────
 
@@ -147,56 +213,12 @@ if [ ! -x "/root/.local/bin/codex" ]; then
 fi
 
 # Seed environment notes for both agents (created once; edit in place afterwards,
-# these are not overwritten on later starts — delete or --flush to reseed)
-ENV_NOTES=$(cat << 'NOTES_EOF'
-# Environment
-
-You are running inside a persistent Podman dev container (Arch Linux), started
-via the `dev` script — not directly on the host.
-
-- Host OS: NixOS (host packages are managed via Nix, not pacman/apt — this
-  container's package manager has no bearing on the host)
-- Container OS: Arch Linux (pacman available inside the container)
-- Shell: zsh
-- GitHub identity:
-  - Username: `petol`
-  - Commit email: `petter@pols.se`
-- You may install packages with `pacman` as needed. The container is ephemeral,
-  so system packages installed this way disappear when it is recreated.
-- Workspace: the host project dir is bind-mounted at `/code` — the only path
-  shared with the host
-- `/code` may map to different host folders between runs. Do not assume a
-  particular path under `/code` always represents the same project; determine
-  project identity from the folder's contents. Keep project-specific memories,
-  notes, and configuration in that project's folder rather than associating
-  them globally with a `/code` path.
-- Persistent volumes (survive container restarts/recreation, wiped only by
-  `dev --flush`):
-  - `/root/.claude` — Claude Code auth + config
-  - `/root/.codex` — Codex CLI auth + config
-  - `/root/.local` — installed CLI binaries (claude, codex) and global
-    npm/pip/go installs
-- Anything outside `/code` and the volumes above is ephemeral and resets on
-  container recreation.
-- This container is deliberately permissive (built for agentic/"yolo mode"
-  use) since it's isolated from the host — but it is hardened in specific,
-  deliberate ways, listed below. If something fails because of one of these,
-  that is by design, not a bug to work around:
-  - Network: outbound to the home LAN (`192.168.0.0/16`) is blocked except
-    the DNS server (`192.168.10.53`). General internet access is open — this
-    is not an allowlist, just a LAN block. Enforced by an nftables rule in
-    this container's own network namespace.
-  - Capabilities: pinned to a minimal explicit set (no `NET_ADMIN`,
-    `NET_RAW`, etc.). Commands like `ping`, `nft`, `ip route add/del`, or
-    anything needing raw sockets will fail with "Operation not permitted" —
-    that's the capability pin working, not a broken container.
-  - Resources: memory capped at 24GB, process count capped at 4096 pids.
-  - Audit: interactive shell commands (typed at this zsh prompt) are logged
-    to `/root/.audit/shell-history.log`. This does not cover Claude/Codex's
-    own tool-invoked commands, which each already logs separately in its own
-    persisted state.
-NOTES_EOF
-)
+# these are not overwritten on later starts unless the host runs `dev
+# --update-notes`, which rewrites both files in place from outside the
+# container). ENV_NOTES_PLACEHOLDER is substituted below with the same
+# $ENV_NOTES text the host script uses for --update-notes, so the two paths
+# can never drift out of sync.
+ENV_NOTES='ENV_NOTES_PLACEHOLDER'
 
 [ -f /root/.claude/CLAUDE.md ] || echo "$ENV_NOTES" > /root/.claude/CLAUDE.md
 [ -f /root/.codex/AGENTS.md ]  || echo "$ENV_NOTES" > /root/.codex/AGENTS.md
@@ -205,6 +227,11 @@ exec "$@"
 EOF
 )
 
+# Splice the real notes text in for the placeholder (bash's ${var//pat/rep}
+# treats the replacement as a literal string, so no escaping of $ or ` in
+# ENV_NOTES is needed here).
+ENTRYPOINT_SCRIPT="${ENTRYPOINT_SCRIPT//ENV_NOTES_PLACEHOLDER/$ENV_NOTES}"
+
 # ─── Volumes ──────────────────────────────────────────────────────────────────
 
 podman volume create claude-auth 2>/dev/null || true
@@ -212,10 +239,36 @@ podman volume create claude-local 2>/dev/null || true
 podman volume create codex-auth 2>/dev/null || true
 podman volume create dev-audit 2>/dev/null || true
 
+if [[ "$UPDATE_NOTES" == true ]]; then
+    echo "→ Updating environment notes..."
+    # Write straight to each volume's host-side mountpoint, so this works
+    # whether or not the container is currently running and without needing
+    # --flush (which would also wipe auth).
+    CLAUDE_AUTH_MOUNT="$(podman volume inspect claude-auth --format '{{.Mountpoint}}' 2>/dev/null)"
+    CODEX_AUTH_MOUNT="$(podman volume inspect codex-auth --format '{{.Mountpoint}}' 2>/dev/null)"
+    if [ -n "$CLAUDE_AUTH_MOUNT" ]; then
+        echo "$ENV_NOTES" > "$CLAUDE_AUTH_MOUNT/CLAUDE.md"
+    fi
+    if [ -n "$CODEX_AUTH_MOUNT" ]; then
+        echo "$ENV_NOTES" > "$CODEX_AUTH_MOUNT/AGENTS.md"
+    fi
+fi
+
 # ─── Build if missing ─────────────────────────────────────────────────────────
 
 if ! podman image exists "$IMAGE"; then
     build_image
+fi
+
+# ─── Restart ──────────────────────────────────────────────────────────────────
+# Stop/remove the existing container so the logic below always falls through
+# to creating a fresh one (e.g. to mount a different workspace) instead of
+# just attaching to whatever is already running.
+
+if [[ "$RESTART" == true ]] && podman container inspect "$CONTAINER" &>/dev/null 2>&1; then
+    echo "→ Restarting: stopping existing container..."
+    podman stop "$CONTAINER" >/dev/null 2>&1 || true
+    podman rm "$CONTAINER" >/dev/null 2>&1 || true
 fi
 
 # ─── Attach or start ──────────────────────────────────────────────────────────

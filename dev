@@ -158,8 +158,18 @@ via the `dev` script — not directly on the host.
   container's package manager has no bearing on the host)
 - Container OS: Arch Linux (pacman available inside the container)
 - Shell: zsh
+- GitHub identity:
+  - Username: `petol`
+  - Commit email: `petter@pols.se`
+- You may install packages with `pacman` as needed. The container is ephemeral,
+  so system packages installed this way disappear when it is recreated.
 - Workspace: the host project dir is bind-mounted at `/code` — the only path
   shared with the host
+- `/code` may map to different host folders between runs. Do not assume a
+  particular path under `/code` always represents the same project; determine
+  project identity from the folder's contents. Keep project-specific memories,
+  notes, and configuration in that project's folder rather than associating
+  them globally with a `/code` path.
 - Persistent volumes (survive container restarts/recreation, wiped only by
   `dev --flush`):
   - `/root/.claude` — Claude Code auth + config

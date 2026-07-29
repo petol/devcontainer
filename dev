@@ -212,25 +212,16 @@ if [ ! -x "/root/.local/bin/codex" ]; then
     npm install -g --prefix /root/.local @openai/codex
 fi
 
-# Seed environment notes for both agents (created once; edit in place afterwards,
-# these are not overwritten on later starts unless the host runs `dev
-# --update-notes`, which rewrites both files in place from outside the
-# container). ENV_NOTES_PLACEHOLDER is substituted below with the same
-# $ENV_NOTES text the host script uses for --update-notes, so the two paths
-# can never drift out of sync.
-ENV_NOTES='ENV_NOTES_PLACEHOLDER'
-
-[ -f /root/.claude/CLAUDE.md ] || echo "$ENV_NOTES" > /root/.claude/CLAUDE.md
-[ -f /root/.codex/AGENTS.md ]  || echo "$ENV_NOTES" > /root/.codex/AGENTS.md
+# Seed environment notes for both agents (created once; edit in place
+# afterwards). Notes arrive via a read-only bind mount at /etc/dev-env-notes
+# that the host populates from $ENV_NOTES — same source as --update-notes,
+# so the two can't drift, and the text never passes through shell parsing.
+[ -f /root/.claude/CLAUDE.md ] || cp /etc/dev-env-notes /root/.claude/CLAUDE.md
+[ -f /root/.codex/AGENTS.md ]  || cp /etc/dev-env-notes /root/.codex/AGENTS.md
 
 exec "$@"
 EOF
 )
-
-# Splice the real notes text in for the placeholder (bash's ${var//pat/rep}
-# treats the replacement as a literal string, so no escaping of $ or ` in
-# ENV_NOTES is needed here).
-ENTRYPOINT_SCRIPT="${ENTRYPOINT_SCRIPT//ENV_NOTES_PLACEHOLDER/$ENV_NOTES}"
 
 # ─── Volumes ──────────────────────────────────────────────────────────────────
 
@@ -289,7 +280,10 @@ echo "→ Starting container, workspace: $WORKSPACE"
 # Write entrypoint to a temp file
 TMPEP=$(mktemp /tmp/dev-entrypoint-XXXXXX.sh)
 chmod 0600 "$TMPEP"
-trap 'rm -f "$TMPEP"' EXIT INT TERM HUP
+TMPNOTES=$(mktemp /tmp/dev-notes-XXXXXX.md)
+chmod 0600 "$TMPNOTES"
+printf '%s\n' "$ENV_NOTES" > "$TMPNOTES"
+trap 'rm -f "$TMPEP" "$TMPNOTES"' EXIT INT TERM HUP
 echo "$ENTRYPOINT_SCRIPT" > "$TMPEP"
 chmod 0700 "$TMPEP"
 
@@ -307,6 +301,7 @@ podman run -d \
     -v "codex-auth:/root/.codex:z" \
     -v "dev-audit:/root/.audit:z" \
     -v "$TMPEP:/entrypoint.sh:z" \
+    -v "$TMPNOTES:/etc/dev-env-notes:ro,z" \
     -w /code \
     --entrypoint /entrypoint.sh \
     "$IMAGE" \

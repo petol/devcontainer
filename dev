@@ -258,6 +258,7 @@ if [ ! -f "$OPENCODE_CONFIG" ]; then
         echo "$TAGS" | jq --arg url "$OLLAMA_URL/v1" '
             {
               "$schema": "https://opencode.ai/config.json",
+              enabled_providers: ["ollama"],
               provider: {
                 ollama: {
                   npm: "@ai-sdk/openai-compatible",

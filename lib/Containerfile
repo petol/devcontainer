@@ -1,0 +1,33 @@
+FROM archlinux:base-20260607.0.541780
+
+RUN pacman -Syu --noconfirm && \
+    pacman -S --noconfirm \
+        base-devel git curl wget unzip jq \
+        nodejs npm python python-pip go \
+        zsh chromium && \
+    pacman -Scc --noconfirm
+
+ADD https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh /tmp/omz-install.sh
+RUN chmod +x /tmp/omz-install.sh && \
+    env -i HOME=/root PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    /tmp/omz-install.sh --unattended
+
+ENV GOPATH=/root/go
+ENV PATH=$PATH:/root/go/bin
+ENV SHELL=/bin/zsh
+ENV NODE_PATH=/usr/lib/node_modules
+
+WORKDIR /code
+
+# Playwright: pacman's chromium supplies the runtime shared libs (nss, gtk3,
+# alsa-lib, mesa, ...); Playwright still downloads its own version-matched
+# browser build so its driver protocol always matches the browser it drives.
+RUN npm install -g playwright && \
+    npx playwright install chromium
+
+RUN echo 'export PROMPT="%F{cyan}⬡ devbox%f %F{yellow}%~%f %(?.%F{green}.%F{red})❯%f "' >> /root/.zshrc && \
+    echo 'export PATH="$HOME/.local/bin:$PATH"' >> /root/.zshrc && \
+    echo 'DEV_AUDIT_LOG=/root/.audit/shell-history.log' >> /root/.zshrc && \
+    echo 'preexec() { print -r -- "$(date -Iseconds) [$$] ${PWD} :: ${1}" >> "$DEV_AUDIT_LOG" 2>/dev/null }' >> /root/.zshrc && \
+    echo "alias claude='IS_SANDBOX=1 claude --dangerously-skip-permissions'" >> /root/.zshrc && \
+    echo "alias codex='codex -yolo'" >> /root/.zshrc

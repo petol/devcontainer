@@ -11,7 +11,7 @@ A single Bash script (`dev`) that defines a Podman-based dev container for agent
 - `bash -n dev` — syntax-check after any edit. There is no other linter.
 - `dev --rebuild` — rebuild the image and pick up changes to `build_image()` or the entrypoint. Required after editing either.
 - `dev --flush --rebuild` — full reset: wipes `claude-auth`, `claude-local`, `codex-auth` (not `dev-audit`) and rebuilds. Use this when you need to verify an install-on-first-run code path actually executes — a stale volume with a manually-placed binary will otherwise make an install check silently pass without ever running (this exact bug happened once with the Codex binary).
-- `dev --upgrade` — reinstall Claude Code and Codex, preserving auth.
+- `dev --upgrade` — reinstall Claude Code, Codex, and opencode, preserving auth.
 - `dev --restart <path>` — stop/remove the running container first, so a fresh one is created mounting `<path>`, instead of just attaching to whatever is already running with its old mount.
 - `dev --update-notes` — force-rewrite the seeded `CLAUDE.md`/`AGENTS.md` from the current template without flushing auth. Writes straight to each volume's mountpoint, so it works even if no container is running.
 - No automated tests exist. The established way to validate a change to `dev` is to run the equivalent commands live inside the *currently running* container first (pacman installs, capability checks, nft rule syntax, etc.), confirm the behavior, and only then write it into the Dockerfile/entrypoint heredoc. Several past changes (Playwright/Chromium, the network firewall, the `--upgrade` volume-inspect fix) were verified this way before being committed.
@@ -22,7 +22,7 @@ Everything is in `dev`, in four parts:
 
 1. **Flag parsing** (`--rebuild`/`--flush`/`--upgrade`/`--restart`/`--update-notes`/`--help`) at the top.
 2. **`build_image()`** — the Dockerfile as a heredoc. Installs the Arch toolchain, Oh My Zsh, Chromium (system libs only — see gotcha below), and Playwright globally.
-3. **`ENTRYPOINT_SCRIPT`** — a heredoc written to a temp file and bind-mounted into the container as `/entrypoint.sh`. Runs once per container creation: installs Claude Code (stamped via `/root/.claude/.installed` so it never reruns), installs Codex if its binary is missing, and seeds `CLAUDE.md`/`AGENTS.md` environment notes into the two auth volumes (only if not already present — see gotcha below).
+3. **`ENTRYPOINT_SCRIPT`** — a heredoc written to a temp file and bind-mounted into the container as `/entrypoint.sh`. Runs once per container creation: installs Claude Code (stamped via `/root/.claude/.installed` so it never reruns), installs Codex if its binary is missing, installs opencode if its binary is missing, generates opencode's Ollama provider config from whatever the host currently has pulled (see gotcha below), and seeds `CLAUDE.md`/`AGENTS.md` environment notes into the two auth volumes (only if not already present — see gotcha below).
 4. **Attach-or-start logic** at the bottom, which now follows a specific two-step container lifecycle (see below).
 
 ### Container lifecycle: detached + exec, plus a throwaway firewall helper
@@ -38,11 +38,13 @@ This exists specifically so the main container never has to hold `NET_ADMIN` its
 | Volume | Mounted at | Actually contains |
 |---|---|---|
 | `claude-auth` | `/root/.claude` | Claude auth/config + the `.installed` stamp that gates reinstall |
-| `claude-local` | `/root/.local` | **Both** the Claude *and* Codex binaries, despite the name |
+| `claude-local` | `/root/.local` | The Claude, Codex, **and** opencode binaries, despite the name |
 | `codex-auth` | `/root/.codex` | Codex auth/config only — no install stamp lives here |
 | `dev-audit` | `/root/.audit` | Interactive shell history log (zsh `preexec` hook) |
 
-Codex's reinstall check is `[ ! -x /root/.local/bin/codex ]` against `claude-local`, not a stamp file in `codex-auth` — there is no such stamp. A previous version of `--upgrade` tried to clear one anyway; it was dead code and has been removed. If you're touching the upgrade/flush logic, remember which volume actually gates which install.
+Codex's and opencode's reinstall checks are `[ ! -x /root/.local/bin/<binary> ]` against `claude-local`, not a stamp file in a dedicated volume — there is no such stamp for either. A previous version of `--upgrade` tried to clear one for Codex anyway; it was dead code and has been removed. If you're touching the upgrade/flush logic, remember which volume actually gates which install.
+
+opencode has no dedicated auth volume either: its `opencode.json` (the Ollama provider config) lives under `/root/.config`, which isn't a persisted volume at all — it's regenerated from scratch on every fresh container by querying the host's Ollama `/api/tags` at container-start time, rather than seeded once like the `CLAUDE.md`/`AGENTS.md` notes below. Any credentials from `opencode auth login` for other providers would land under `/root/.local/share/opencode`, which *is* covered by the `claude-local` volume since that mounts all of `/root/.local`.
 
 ### Environment notes: single source, seeded once, force-updatable
 
@@ -53,6 +55,12 @@ On first container start, the entrypoint writes `CLAUDE.md`/`AGENTS.md` into `cl
 ### Networking backend: pasta, not host networking
 
 Rootless Podman here uses **pasta** by default, which clones the host's outbound interface's *name and IP* into the container's own private network namespace for transparent, NAT-free access. From inside the container, `ip addr` looks identical to host networking (same interface name, same IP) — it isn't. Confirm with `ip -d link show <iface>`: a pasta interface shows up as `tun type tap`, with a sysfs path under `/sys/devices/virtual/net/...` and a synthetic gateway MAC in the ARP table, whereas real host networking would not create a new namespace at all. This has been misdiagnosed as `--network=host` once already in this project — check before assuming either way.
+
+### opencode + Ollama: reachable via pasta's host.containers.internal, no firewall change needed
+
+opencode is configured to talk to Ollama running on the host, not inside the container — there's no Ollama install in the Dockerfile. This works because pasta (see above) maps the host to `host.containers.internal`/`host.docker.internal` (both resolve to the same link-local address, `169.254.1.2` here) automatically, no `containers.conf` changes required. That address is outside `192.168.0.0/16`, so the LAN-block firewall rule doesn't touch it — confirmed working (`curl http://host.containers.internal:11434/api/tags` from inside the container) without adding an nft exception. The one host-side requirement is that Ollama listens on more than just `127.0.0.1`; if the entrypoint's `curl` to `/api/tags` fails at container-start time (Ollama down, or bound to loopback only), it just skips writing the provider config rather than seeding a broken one.
+
+The generated config only lists models with `tools` in their Ollama `capabilities` (filters out embedding-only models like `nomic-embed-text`), since opencode needs tool-calling for agentic use.
 
 ### Threat model for the yolo-mode hardening
 

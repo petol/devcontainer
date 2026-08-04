@@ -12,6 +12,7 @@ A Podman-based dev container for AI-assisted coding on NixOS, driven by a single
 - Hardened for agentic/"yolo mode" use: LAN access is blocked (internet stays open), capabilities are pinned to a minimal explicit set, memory/process limits are enforced, and interactive shell commands are logged — see [Security hardening](#security-hardening)
 - Re-attaches to a running container if one is already active
 - Installers are fetched from official sources, if you're sensitive to curl | sh then review first
+- `claude` and `codex` are aliased in the container's zsh to always run in yolo mode (`--dangerously-skip-permissions` / `-yolo`), so the flags don't need to be typed every session
 
 ## Install
 
@@ -70,7 +71,7 @@ dev --flush --rebuild ~/code/myproject
 
 ## Local models via Ollama
 
-If Ollama is running on the host, opencode is auto-configured to use it as a model provider — no setup needed. On every fresh container start, the entrypoint queries the host's Ollama server at `http://host.containers.internal:11434` (reachable automatically via Podman's pasta networking, no firewall changes needed) and writes an `ollama` provider into `~/.config/opencode/opencode.json`, listing whatever tool-capable models are currently pulled on the host.
+If Ollama is running on the host, opencode is auto-configured to use it as a model provider — no setup needed. On every fresh container start, the entrypoint queries the host's Ollama server at `http://host.containers.internal:11434` (reachable automatically via Podman's pasta networking, no firewall changes needed) and writes an `ollama` provider into `~/.config/opencode/opencode.json`, listing whatever tool-capable models are currently pulled on the host. The generated config also sets `enabled_providers: ["ollama"]`, so opencode's model picker stays limited to those local models even if credentials for another provider (Anthropic, OpenAI, etc.) show up later.
 
 Requirements on the host side:
 

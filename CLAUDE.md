@@ -4,26 +4,29 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repo is
 
-A single Bash script (`dev`) that defines a Podman-based dev container for agentic/"yolo mode" AI coding on a NixOS host. There is no build system, no test suite, no package.json/Makefile — the entire project is `dev`, plus `README.md` and `LICENSE`. The Dockerfile and the container's entrypoint script both live inline as heredocs inside `dev`, not as separate files.
+A Bash script (`dev`) plus a `lib/` directory that defines a Podman-based dev container for agentic/"yolo mode" AI coding on a NixOS host. There is no build system, no test suite, no package.json/Makefile — the project is `dev`, `lib/Containerfile`, `lib/entrypoint.sh`, `lib/env-notes.md`, plus `README.md` and `LICENSE`. The Dockerfile and the container's entrypoint script used to live inline as heredocs inside `dev`; they were extracted into `lib/` once `dev` grew past ~400 lines (see Architecture below) and are now read from disk at runtime instead.
+
+**Keep this file up to date.** Whenever a change to `dev`/`lib/` alters architecture, behavior, or a documented gotcha, update the relevant section here in the same change — don't leave it to drift. (The `ENV_NOTES_PLACEHOLDER` mechanism described in a previous version of this file was removed from the code well before the doc caught up — don't repeat that.)
 
 ## Commands
 
-- `bash -n dev` — syntax-check after any edit. There is no other linter.
-- `dev --rebuild` — rebuild the image and pick up changes to `build_image()` or the entrypoint. Required after editing either.
+- `bash -n dev && bash -n lib/entrypoint.sh` — syntax-check after any edit. `lib/entrypoint.sh` is a standalone script now, so it's also independently shellcheck-able (`shellcheck lib/entrypoint.sh`) if you want deeper checks — not mandatory, no CI enforces it.
+- `dev --rebuild` — rebuild the image and pick up changes to `lib/Containerfile` or `lib/entrypoint.sh`. Required after editing either.
 - `dev --flush --rebuild` — full reset: wipes `claude-auth`, `claude-local`, `codex-auth` (not `dev-audit`) and rebuilds. Use this when you need to verify an install-on-first-run code path actually executes — a stale volume with a manually-placed binary will otherwise make an install check silently pass without ever running (this exact bug happened once with the Codex binary).
 - `dev --upgrade` — reinstall Claude Code, Codex, and opencode, preserving auth.
 - `dev --restart <path>` — stop/remove the running container first, so a fresh one is created mounting `<path>`, instead of just attaching to whatever is already running with its old mount.
 - `dev --update-notes` — force-rewrite the seeded `CLAUDE.md`/`AGENTS.md` from the current template without flushing auth. Writes straight to each volume's mountpoint, so it works even if no container is running.
-- No automated tests exist. The established way to validate a change to `dev` is to run the equivalent commands live inside the *currently running* container first (pacman installs, capability checks, nft rule syntax, etc.), confirm the behavior, and only then write it into the Dockerfile/entrypoint heredoc. Several past changes (Playwright/Chromium, the network firewall, the `--upgrade` volume-inspect fix) were verified this way before being committed.
+- No automated tests exist. The established way to validate a change to `dev`/`lib/` is to run the equivalent commands live inside the *currently running* container first (pacman installs, capability checks, nft rule syntax, etc.), confirm the behavior, and only then write it into `lib/Containerfile`/`lib/entrypoint.sh`. Several past changes (Playwright/Chromium, the network firewall, the `--upgrade` volume-inspect fix) were verified this way before being committed.
 
 ## Architecture
 
-Everything is in `dev`, in four parts:
+`dev` is the orchestrator; the Dockerfile, entrypoint, and env-notes content live in `lib/` as real files, read into bash variables at runtime rather than embedded as heredocs (extracted in a refactor once `dev` grew past ~400 lines — the two are functionally identical since all three heredocs were single-quoted, i.e. captured as literal strings with no shell expansion, so moving them to files changed nothing at runtime).
 
-1. **Flag parsing** (`--rebuild`/`--flush`/`--upgrade`/`--restart`/`--update-notes`/`--help`) at the top.
-2. **`build_image()`** — the Dockerfile as a heredoc. Installs the Arch toolchain, Oh My Zsh, Chromium (system libs only — see gotcha below), and Playwright globally.
-3. **`ENTRYPOINT_SCRIPT`** — a heredoc written to a temp file and bind-mounted into the container as `/entrypoint.sh`. Runs once per container creation: installs Claude Code (stamped via `/root/.claude/.installed` so it never reruns), installs Codex if its binary is missing, installs opencode if its binary is missing, generates opencode's Ollama provider config from whatever the host currently has pulled (see gotcha below), and seeds `CLAUDE.md`/`AGENTS.md` environment notes into the two auth volumes (only if not already present — see gotcha below).
-4. **Attach-or-start logic** at the bottom, which now follows a specific two-step container lifecycle (see below).
+1. **Flag parsing** (`--rebuild`/`--flush`/`--upgrade`/`--restart`/`--update-notes`/`--help`) at the top of `dev`.
+2. **`SCRIPT_DIR`/`LIB_DIR` resolution**, near the very top of `dev`, before anything else: `SCRIPT_DIR="$(cd -- "$(dirname -- "$(readlink -f -- "$0")")" &>/dev/null && pwd)"`. This has to use `readlink -f` rather than a bare `dirname "$0"` because `dev` is normally invoked through the `~/.local/bin/dev` symlink (the standard install method — see README), and a naive `dirname` would resolve to `~/.local/bin` instead of wherever the repo actually is. `LIB_DIR="$SCRIPT_DIR/lib"` is what everything below reads from.
+3. **`lib/Containerfile`** — read via `build_image()`, which pipes it into `podman build -t "$IMAGE" - < "$LIB_DIR/Containerfile"` (same "stdin as Dockerfile, empty build context" semantics as before). Installs the Arch toolchain, Oh My Zsh, Chromium (system libs only — see gotcha below), and Playwright globally.
+4. **`lib/entrypoint.sh`** — read into the `ENTRYPOINT_SCRIPT` variable (`ENTRYPOINT_SCRIPT="$(cat "$LIB_DIR/entrypoint.sh")"`), which later gets written to a temp file and bind-mounted into the container as `/entrypoint.sh`. Runs once per container creation: installs Claude Code (stamped via `/root/.claude/.installed` so it never reruns), installs Codex if its binary is missing, installs opencode if its binary is missing, generates opencode's Ollama provider config from whatever the host currently has pulled (see gotcha below), and seeds `CLAUDE.md`/`AGENTS.md` environment notes into the two auth volumes (only if not already present — see gotcha below). It's also a real standalone script now (own `#!/usr/bin/env bash` shebang), so `bash -n`/`shellcheck` can check it directly.
+5. **Attach-or-start logic** at the bottom of `dev`, which follows a specific two-step container lifecycle (see below).
 
 ### Container lifecycle: detached + exec, plus a throwaway firewall helper
 
@@ -48,9 +51,11 @@ opencode has no dedicated auth volume either: its `opencode.json` (the Ollama pr
 
 ### Environment notes: single source, seeded once, force-updatable
 
-`ENV_NOTES` is defined exactly once in `dev` (outside `ENTRYPOINT_SCRIPT`). The entrypoint heredoc contains a literal `ENV_NOTES_PLACEHOLDER` token that gets swapped for the real text via `${ENTRYPOINT_SCRIPT//ENV_NOTES_PLACEHOLDER/$ENV_NOTES}` after the heredoc is captured — this is why the entrypoint heredoc stays single-quoted (`'EOF'`, no shell expansion) while still picking up the shared content; the alternative (an unquoted heredoc) would require escaping every `$INSTALLER`/`$STAMP`/`$(...)` the entrypoint uses internally.
+`ENV_NOTES` is read from `lib/env-notes.md` once, near the top of `dev` (`ENV_NOTES="$(cat "$LIB_DIR/env-notes.md")"`) — that's the single source of truth for both the entrypoint's first-run seeding and `--update-notes`' forced overwrite, so the two paths can't drift out of sync.
 
-On first container start, the entrypoint writes `CLAUDE.md`/`AGENTS.md` into `claude-auth`/`codex-auth` only if the file doesn't already exist (`[ -f ... ] || echo ... > ...`), so user edits inside a running container are never clobbered by a later restart. To pick up template changes without touching auth, run `dev --update-notes` — it writes `$ENV_NOTES` straight to each volume's host-side mountpoint (found via `podman volume inspect --format '{{.Mountpoint}}'`, same trick `--upgrade` uses), so it works whether or not the container is currently running, and does not require `--flush`/reauth.
+At container-start time, the host writes `$ENV_NOTES` to a tempfile and bind-mounts it read-only into the container at `/etc/dev-env-notes`; `lib/entrypoint.sh` just `cp`s it into place. This is a bind mount, not a string splice into the entrypoint script — the notes text never passes through shell parsing, so it's safe even if it contains characters like apostrophes that would otherwise break a naive splice. (An earlier version of this mechanism did splice `$ENV_NOTES` into a shell string literal inside the entrypoint via a placeholder token; that broke in production the moment the notes text contained an apostrophe, and was replaced by the bind-mount approach in commit `6e0753b`.)
+
+On first container start, the entrypoint writes `CLAUDE.md`/`AGENTS.md` into `claude-auth`/`codex-auth` only if the file doesn't already exist (`[ -f ... ] || cp ...`), so user edits inside a running container are never clobbered by a later restart. To pick up template changes without touching auth, run `dev --update-notes` — it writes `$ENV_NOTES` straight to each volume's host-side mountpoint (found via `podman volume inspect --format '{{.Mountpoint}}'`, same trick `--upgrade` uses), so it works whether or not the container is currently running, and does not require `--flush`/reauth.
 
 ### Networking backend: pasta, not host networking
 

@@ -1,6 +1,6 @@
 # devcontainer
 
-A single-file Podman-based dev container for AI-assisted coding on NixOS. No per-project config files, no home dir pollution.
+A Podman-based dev container for AI-assisted coding on NixOS, driven by a single `dev` script. No per-project config files, no home dir pollution.
 
 ## What it does
 
@@ -27,6 +27,8 @@ Make sure `~/.local/bin` is in your PATH. If not, add to your `~/.zshrc`:
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
+`dev` locates its supporting files (`lib/Containerfile`, `lib/entrypoint.sh`, `lib/env-notes.md`) relative to its own real path, so the repo checkout needs to stay intact as a unit — don't move or symlink `dev` on its own separately from the rest of the clone.
+
 ## Usage
 
 ```bash
@@ -51,10 +53,10 @@ dev --flush --rebuild ~/code/myproject
 
 ## How it works
 
-Everything lives in the `dev` script:
+`dev` is the orchestrator; the Arch Linux image, entrypoint, and env-notes content live alongside it in `lib/`:
 
-- **Image definition** — the Arch Linux base image and toolchain is defined inline as a heredoc, no separate `Containerfile` needed
-- **Entrypoint logic** — Claude Code, Codex CLI, and opencode installation runs on first container start, each gated so it never reruns once done; environment notes are seeded into both agents' config the same way
+- **Image definition** — the Arch Linux base image and toolchain is defined in `lib/Containerfile`
+- **Entrypoint logic** — `lib/entrypoint.sh` runs Claude Code, Codex CLI, and opencode installation on first container start, each gated so it never reruns once done; environment notes are seeded into both agents' config the same way
 - **Container startup** — the container starts detached (not attached to your terminal), a short-lived helper container then installs the network firewall rule (see below), and only then does `dev` attach you to an interactive shell. Both a first-ever start and reattaching to an already-running container go through that same final attach step.
 - **Named volumes** — `claude-auth`, `claude-local`, `codex-auth`, and `dev-audit` persist auth, binaries, and the shell audit log across container restarts and rebuilds (see [Volumes](#volumes))
 - **Auth persistence** — `.claude.json` is symlinked into the `claude-auth` volume so auth survives container rebuilds
@@ -79,7 +81,7 @@ This config file isn't in a persisted volume, so it's regenerated fresh (picking
 
 ## Updating the toolchain
 
-Edit the `build_image()` function in `dev`, then rebuild:
+Edit `lib/Containerfile`, then rebuild:
 
 ```bash
 dev --rebuild

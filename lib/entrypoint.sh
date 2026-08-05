@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+#
+# External URLs referenced below:
+#   https://claude.ai/install.sh                — Claude Code installer (downloaded to file, never piped to sh)
+#   http://$OLLAMA_HOST:$OLLAMA_PORT/api/tags    — host Ollama server, queried to build opencode's provider config
+#   https://opencode.ai/config.json              — $schema referenced in the generated opencode.json
+#
 set -e
 export PATH="/root/.local/bin:$PATH"
 STAMP="/root/.claude/.installed"

@@ -1,3 +1,5 @@
+# External URLs referenced below:
+#   https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh — Oh My Zsh installer
 FROM archlinux:base-20260607.0.541780
 
 RUN pacman -Syu --noconfirm && \

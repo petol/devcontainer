@@ -8,8 +8,8 @@ via the `dev` script — not directly on the host.
 - Container OS: Arch Linux (pacman available inside the container)
 - Shell: zsh
 - GitHub identity:
-  - Username: `petol`
-  - Commit email: `petter@pols.se`
+  - Username: `{{GITHUB_USERNAME}}`
+  - Commit email: `{{GITHUB_EMAIL}}`
 - You may install packages with `pacman` as needed. The container is ephemeral,
   so system packages installed this way disappear when it is recreated.
 - Workspace: the host project dir is bind-mounted at `/code` — the only path
@@ -30,7 +30,7 @@ via the `dev` script — not directly on the host.
   (see below), so edits there don't survive a container recreation.
 - opencode is installed alongside Claude Code and Codex. It's pre-configured
   with an `ollama` provider pointing at the Ollama server running on the
-  host, reachable at `host.containers.internal:11434` via Podman's pasta
+  host, reachable at `{{OLLAMA_HOST}}:{{OLLAMA_PORT}}` via Podman's pasta
   networking — no LAN-block or extra setup needed. That provider's model
   list is generated at container-start time from whatever's actually pulled
   on the host (`ollama list` there), so it reflects that host's models, not
@@ -39,10 +39,10 @@ via the `dev` script — not directly on the host.
   use) since it's isolated from the host — but it is hardened in specific,
   deliberate ways, listed below. If something fails because of one of these,
   that is by design, not a bug to work around:
-  - Network: outbound to the home LAN (`192.168.0.0/16`) is blocked except
-    the DNS server (`192.168.10.53`). General internet access is open — this
-    is not an allowlist, just a LAN block. Enforced by an nftables rule in
-    this container's own network namespace.
+  - Network: outbound to the home LAN (`{{LAN_BLOCK_RANGE}}`) is blocked
+    except the DNS server (`{{DNS_IP}}`). General internet access is open —
+    this is not an allowlist, just a LAN block. Enforced by an nftables rule
+    in this container's own network namespace.
   - Capabilities: pinned to a minimal explicit set (no `NET_ADMIN`,
     `NET_RAW`, etc.). Commands like `ping`, `nft`, `ip route add/del`, or
     anything needing raw sockets will fail with "Operation not permitted" —

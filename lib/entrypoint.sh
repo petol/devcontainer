@@ -56,19 +56,21 @@ if ! /root/.local/bin/opencode --version >/dev/null 2>&1; then
     node /root/.local/lib/node_modules/opencode-ai/postinstall.mjs
 fi
 
-# Point opencode at the host's Ollama server. Podman's pasta network backend
-# maps the host to host.containers.internal, which is reachable from here
-# (it's a link-local address, outside the 192.168.0.0/16 range the firewall
-# blocks) as long as Ollama is listening on more than just 127.0.0.1 on the
-# host. Config lives under /root/.config, which isn't a persisted volume, so
-# this runs unconditionally on every fresh container — nothing worth keeping
+# Point opencode at the host's Ollama server. OLLAMA_HOST/OLLAMA_PORT come
+# from the host's .env via -e on `podman run`, defaulting to
+# host.containers.internal:11434 — Podman's pasta network backend maps the
+# host to that address (a link-local address, expected to fall outside
+# whatever LAN_BLOCK_RANGE the firewall enforces) as long as Ollama is
+# listening on more than just 127.0.0.1 on the host. Config lives under
+# /root/.config, which isn't a persisted volume, so this runs unconditionally
+# on every fresh container — nothing worth keeping
 # across recreation lives there, and re-querying picks up whatever models are
 # currently pulled on the host instead of going stale. If Ollama isn't
 # reachable at container-start time, this is skipped rather than writing a
 # provider that will just fail; rerun `opencode` setup manually once it's up.
 OPENCODE_CONFIG="/root/.config/opencode/opencode.json"
 if [ ! -f "$OPENCODE_CONFIG" ]; then
-    OLLAMA_URL="http://host.containers.internal:11434"
+    OLLAMA_URL="http://${OLLAMA_HOST:-host.containers.internal}:${OLLAMA_PORT:-11434}"
     TAGS=$(curl -fsSL -m 2 "$OLLAMA_URL/api/tags" 2>/dev/null || true)
     if [ -n "$TAGS" ]; then
         echo ">>> Configuring opencode for Ollama at $OLLAMA_URL..."

@@ -10,6 +10,22 @@ LIB_DIR="$SCRIPT_DIR/lib"
 CONTAINER="arch-dev-persistent"
 IMAGE="arch-dev"
 
+# ─── Local config (.env) ───────────────────────────────────────────────────────
+# GitHub identity, firewall targets, and the Ollama host live in .env
+# (gitignored) rather than hardcoded here, since this repo is public — see
+# .env.example for the template. Validated below, after flag parsing, so
+# --help still works without a .env file present.
+
+if [[ -f "$SCRIPT_DIR/.env" ]]; then
+    set -a
+    # shellcheck disable=SC1091
+    source "$SCRIPT_DIR/.env"
+    set +a
+fi
+
+: "${OLLAMA_HOST:=host.containers.internal}"
+: "${OLLAMA_PORT:=11434}"
+
 # ─── Flags ────────────────────────────────────────────────────────────────────
 
 REBUILD=false
@@ -43,6 +59,12 @@ while [[ $# -gt 0 ]]; do
         *)              break ;;
     esac
 done
+
+if [[ -z "${GITHUB_USERNAME:-}" || -z "${GITHUB_EMAIL:-}" || -z "${DNS_IP:-}" || -z "${LAN_BLOCK_RANGE:-}" ]]; then
+    echo "error: GITHUB_USERNAME, GITHUB_EMAIL, DNS_IP, and LAN_BLOCK_RANGE must be set." >&2
+    echo "       Run: cp \"$SCRIPT_DIR/.env.example\" \"$SCRIPT_DIR/.env\" and fill in your values." >&2
+    exit 1
+fi
 
 WORKSPACE="${1:-$PWD}"
 WORKSPACE="$(realpath "$WORKSPACE")"
@@ -83,8 +105,18 @@ fi
 # ─── Environment notes ────────────────────────────────────────────────────────
 # Single source of truth for both the entrypoint's first-run seeding and
 # --update-notes' forced overwrite, so the two paths can't drift out of sync.
+# Placeholders are substituted via sed on plain file text — not spliced into
+# any shell-parsed string — so this stays safe even if a value (e.g. an
+# email address) contains characters that would break naive interpolation.
 
-ENV_NOTES="$(cat "$LIB_DIR/env-notes.md")"
+ENV_NOTES="$(sed \
+    -e "s#{{GITHUB_USERNAME}}#$GITHUB_USERNAME#g" \
+    -e "s#{{GITHUB_EMAIL}}#$GITHUB_EMAIL#g" \
+    -e "s#{{DNS_IP}}#$DNS_IP#g" \
+    -e "s#{{LAN_BLOCK_RANGE}}#$LAN_BLOCK_RANGE#g" \
+    -e "s#{{OLLAMA_HOST}}#$OLLAMA_HOST#g" \
+    -e "s#{{OLLAMA_PORT}}#$OLLAMA_PORT#g" \
+    "$LIB_DIR/env-notes.md")"
 
 # ─── Image definition ─────────────────────────────────────────────────────────
 
@@ -169,6 +201,8 @@ podman run -d \
     --cap-add=NET_BIND_SERVICE --cap-add=SYS_CHROOT --cap-add=SETFCAP \
     --security-opt no-new-privileges \
     --memory=24g --memory-swap=24g --pids-limit=4096 \
+    -e OLLAMA_HOST="$OLLAMA_HOST" \
+    -e OLLAMA_PORT="$OLLAMA_PORT" \
     -v "${WORKSPACE}:/code:z" \
     -v "claude-auth:/root/.claude:z" \
     -v "claude-local:/root/.local:z" \
@@ -186,17 +220,22 @@ podman run -d \
 # allowlist). Applied by a short-lived helper that joins the container's
 # network namespace with a transient NET_ADMIN — the main container above never
 # gets that capability, so nothing running inside it can remove this rule.
+# DNS_IP/LAN_BLOCK_RANGE reach the nft rule via -e (container env), expanded
+# by the container's own sh when it runs the script below — never spliced
+# into this string on the host side.
 
 echo "→ Applying network policy (blocking LAN, allowing DNS + internet)..."
 podman run --rm \
     --network "container:$CONTAINER" \
     --cap-add=NET_ADMIN \
+    -e DNS_IP="$DNS_IP" \
+    -e LAN_BLOCK_RANGE="$LAN_BLOCK_RANGE" \
     "$IMAGE" \
     sh -c '
         nft add table inet devfw
         nft add chain inet devfw output "{ type filter hook output priority filter ; policy accept ; }"
-        nft add rule inet devfw output ip daddr 192.168.10.53 accept
-        nft add rule inet devfw output ip daddr 192.168.0.0/16 drop
+        nft add rule inet devfw output ip daddr "$DNS_IP" accept
+        nft add rule inet devfw output ip daddr "$LAN_BLOCK_RANGE" drop
     '
 
 echo "→ Attaching, workspace: $WORKSPACE"

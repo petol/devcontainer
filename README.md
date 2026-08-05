@@ -30,6 +30,24 @@ export PATH="$HOME/.local/bin:$PATH"
 
 `dev` locates its supporting files (`lib/Containerfile`, `lib/entrypoint.sh`, `lib/env-notes.md`) relative to its own real path, so the repo checkout needs to stay intact as a unit — don't move or symlink `dev` on its own separately from the rest of the clone.
 
+## Configuration
+
+`dev` reads a few personal/environment-specific values from a `.env` file next to it (gitignored, never committed) rather than hardcoding them:
+
+```bash
+cp .env.example .env
+```
+
+Then fill in:
+
+| Variable | Purpose |
+|---|---|
+| `GITHUB_USERNAME`, `GITHUB_EMAIL` | seeded into the agents' `CLAUDE.md`/`AGENTS.md` notes |
+| `DNS_IP`, `LAN_BLOCK_RANGE` | firewall rule — `DNS_IP` is allowed through, everything else in `LAN_BLOCK_RANGE` is dropped (see [Security hardening](#security-hardening)) |
+| `OLLAMA_HOST`, `OLLAMA_PORT` | where the container looks for Ollama on the host (see [Local models via Ollama](#local-models-via-ollama)); defaults to `host.containers.internal:11434` if unset |
+
+`GITHUB_USERNAME`, `GITHUB_EMAIL`, `DNS_IP`, and `LAN_BLOCK_RANGE` are required — `dev` refuses to start without them, since the firewall rule is security-relevant and shouldn't fall back to a guessed default. `OLLAMA_HOST`/`OLLAMA_PORT` are optional.
+
 ## Usage
 
 ```bash
@@ -71,7 +89,7 @@ dev --flush --rebuild ~/code/myproject
 
 ## Local models via Ollama
 
-If Ollama is running on the host, opencode is auto-configured to use it as a model provider — no setup needed. On every fresh container start, the entrypoint queries the host's Ollama server at `http://host.containers.internal:11434` (reachable automatically via Podman's pasta networking, no firewall changes needed) and writes an `ollama` provider into `~/.config/opencode/opencode.json`, listing whatever tool-capable models are currently pulled on the host. The generated config also sets `enabled_providers: ["ollama"]`, so opencode's model picker stays limited to those local models even if credentials for another provider (Anthropic, OpenAI, etc.) show up later.
+If Ollama is running on the host, opencode is auto-configured to use it as a model provider — no setup needed. On every fresh container start, the entrypoint queries the host's Ollama server at `http://$OLLAMA_HOST:$OLLAMA_PORT` (from `.env`, defaulting to `host.containers.internal:11434`, reachable automatically via Podman's pasta networking, no firewall changes needed) and writes an `ollama` provider into `~/.config/opencode/opencode.json`, listing whatever tool-capable models are currently pulled on the host. The generated config also sets `enabled_providers: ["ollama"]`, so opencode's model picker stays limited to those local models even if credentials for another provider (Anthropic, OpenAI, etc.) show up later.
 
 Requirements on the host side:
 
@@ -104,7 +122,7 @@ Playwright is installed globally, and its own version-matched Chromium build is 
 
 This container runs Claude Code / Codex in "yolo mode" (no per-command confirmation), so it's hardened against a careless agent or a prompt-injection-driven mistake — not against a deliberately adversarial one, since everything still runs as root inside the container's own namespaces.
 
-- **Network**: outbound access to the home LAN (`192.168.0.0/16`) is blocked except the DNS server. General internet access stays open — this is a LAN block, not an allowlist. The rule is installed by a short-lived helper container that transiently joins the main container's network namespace with `NET_ADMIN`; the main container itself never gets that capability, so nothing running inside it — including the agent — has a way to remove the rule. This is a real, kernel-enforced boundary, not just a convention.
+- **Network**: outbound access to your home LAN (`LAN_BLOCK_RANGE` in `.env`) is blocked except the DNS server (`DNS_IP`). General internet access stays open — this is a LAN block, not an allowlist. The rule is installed by a short-lived helper container that transiently joins the main container's network namespace with `NET_ADMIN`; the main container itself never gets that capability, so nothing running inside it — including the agent — has a way to remove the rule. This is a real, kernel-enforced boundary, not just a convention.
 - **Capabilities**: pinned to an explicit minimal set (`--cap-drop=ALL` + a small `--cap-add` list) instead of relying on Podman's implicit default, so a future Podman version widening its defaults doesn't silently widen this container's too.
 - **Resources**: memory and process-count limits act as a backstop against a runaway process (fork bomb, OOM) taking down the host.
 - **Audit log**: interactive shell commands (typed at the zsh prompt) are logged to the persisted `dev-audit` volume. This covers manual shell use specifically — Claude Code's and Codex's own tool-invoked commands aren't typed at an interactive prompt, but each CLI already keeps its own durable session/history log in its respective auth volume.

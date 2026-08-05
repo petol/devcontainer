@@ -32,4 +32,4 @@ RUN echo 'export PROMPT="%F{cyan}⬡ devbox%f %F{yellow}%~%f %(?.%F{green}.%F{re
     echo 'DEV_AUDIT_LOG=/root/.audit/shell-history.log' >> /root/.zshrc && \
     echo 'preexec() { print -r -- "$(date -Iseconds) [$$] ${PWD} :: ${1}" >> "$DEV_AUDIT_LOG" 2>/dev/null }' >> /root/.zshrc && \
     echo "alias claude='IS_SANDBOX=1 claude --dangerously-skip-permissions'" >> /root/.zshrc && \
-    echo "alias codex='codex -yolo'" >> /root/.zshrc
+    echo "alias codex='codex --yolo'" >> /root/.zshrc

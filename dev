@@ -69,7 +69,10 @@ fi
 WORKSPACE="${1:-$PWD}"
 WORKSPACE="$(realpath "$WORKSPACE")"
 
-echo "  workspace : $WORKSPACE"
+# Not printed here: whether $WORKSPACE actually ends up mounted depends on
+# whether a container is already running (see Attach or start below) — if
+# one is and --restart wasn't passed, this path is never used. Each branch
+# below prints the workspace that's actually in play, once that's known.
 [[ "$REBUILD"      == true ]] && echo "  rebuild      : yes"
 [[ "$FLUSH"        == true ]] && echo "  flush        : yes"
 [[ "$UPGRADE"      == true ]] && echo "  upgrade      : yes"
@@ -172,7 +175,12 @@ fi
 
 if podman container inspect "$CONTAINER" &>/dev/null 2>&1; then
     if [ "$(podman inspect -f '{{.State.Running}}' "$CONTAINER")" = "true" ]; then
-        echo "→ Attaching, workspace: $WORKSPACE"
+        RUNNING_WORKSPACE="$(podman inspect -f '{{range .Mounts}}{{if eq .Destination "/code"}}{{.Source}}{{end}}{{end}}' "$CONTAINER")"
+        echo "→ Container already running, attaching (workspace: $RUNNING_WORKSPACE)"
+        if [[ "$RUNNING_WORKSPACE" != "$WORKSPACE" ]]; then
+            echo "  note: this differs from the requested path ($WORKSPACE)."
+            echo "        pass --restart to recreate the container mounting it instead."
+        fi
         podman exec -it -w /code \
             "$CONTAINER" /bin/zsh
         exit 0

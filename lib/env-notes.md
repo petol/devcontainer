@@ -35,6 +35,12 @@ via the `dev` script — not directly on the host.
   list is generated at container-start time from whatever's actually pulled
   on the host (`ollama list` there), so it reflects that host's models, not
   a fixed set.
+- If `REQUESTY_API_KEY` was set in the host's `.env`, opencode is also
+  pre-configured with a `requesty` provider (router.requesty.ai). Like the
+  Ollama list above, its model list is queried at container-start time (from
+  Requesty's own `/v1/models`, authenticated with the key) and limited to
+  whatever models that Requesty org/key has approved, not opencode's static,
+  unscoped catalog of every Requesty model.
 - This container is deliberately permissive (built for agentic/"yolo mode"
   use) since it's isolated from the host — but it is hardened in specific,
   deliberate ways, listed below. If something fails because of one of these,
